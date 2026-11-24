@@ -23,9 +23,7 @@ ALIASES = {
     "paris saint germain": "paris sg",
     "paris saint-germain": "paris sg",
     "psg": "paris sg",
-    "inter": "inter",
-    "inter milan": "inter",
-    "internazionale": "inter",
+    "inter milan": "internazionale",
     "ac milan": "milan",
     "atletico madrid": "atletico",
     "atlético madrid": "atletico",
@@ -83,6 +81,25 @@ ALIASES = {
     "arsenal": "arsenal",
     "chelsea": "chelsea",
     "real madrid": "real madrid",
+    "internazionale": "internazionale",
+    "paris saint germain": "paris sg",
+    "slavia prague": "slavia praha",
+    "real betis": "betis",
+    "vfb stuttgart": "stuttgart",
+    "as roma": "roma",
+    "feyenoord rotterdam": "feyenoord",
+    "feyenoord": "feyenoord",
+    "bodo/glimt": "bodo glimt",
+    "lask linz": "lask",
+    "lask": "lask",
+    "slovan bratislava": "slovan bratislava",
+    "viking fk": "viking",
+    "sabah fk": "sabah",
+    "aek athens": "aek",
+    "lille": "lille",
+    "lens": "lens",
+    "como": "como",
+    "aston villa": "aston villa",
 }
 
 
@@ -93,30 +110,44 @@ def normalize(name: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+ELO_RE = re.compile(r'"Elo":\s*([\d.]+),.*?"Name":\s*"((?:[^"\\]|\\.)*)"', re.S)
+
+
+def _parse_ranking_html(text: str) -> dict[str, float]:
+    ratings = {}
+    for elo, name in ELO_RE.findall(text):
+        try:
+            name = json.loads(f'"{name}"')
+            ratings.setdefault(normalize(name), float(elo))
+        except ValueError:
+            continue
+    return ratings
+
+
 def fetch_ratings(date: str) -> dict[str, float]:
-    """Devuelve {nombre_normalizado: elo} para la fecha dada (YYYY-MM-DD)."""
+    """Devuelve {nombre_normalizado: elo}. Prueba la API y, si no responde, la página de ranking."""
     try:
         cache = json.loads(CACHE_FILE.read_text())
     except (OSError, ValueError):
         cache = {}
     if cache.get("date") == date and cache.get("ratings"):
         return cache["ratings"]
-    r = None
-    for scheme in ("http", "https"):
-        r = http.get(f"{scheme}://api.clubelo.com/{date}", "clubelo", timeout=30, retries=1)
+    ratings: dict[str, float] = {}
+    r = http.get(f"http://api.clubelo.com/{date}", "clubelo", timeout=12, retries=0)
+    if r is not None:
+        for row in csv.DictReader(io.StringIO(r.text)):
+            try:
+                ratings[normalize(row["Club"])] = float(row["Elo"])
+            except (KeyError, ValueError):
+                continue
+    if not ratings:
+        r = http.get("https://clubelo.com/Ranking", "clubelo-web", timeout=30, retries=1)
         if r is not None:
-            break
-    if r is None:
+            ratings = _parse_ranking_html(r.text)
+    if not ratings:
         return cache.get("ratings", {})  # último Elo conocido
-    ratings = {}
-    for row in csv.DictReader(io.StringIO(r.text)):
-        try:
-            ratings[normalize(row["Club"])] = float(row["Elo"])
-        except (KeyError, ValueError):
-            continue
-    if ratings:
-        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CACHE_FILE.write_text(json.dumps({"date": date, "t": time.time(), "ratings": ratings}))
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CACHE_FILE.write_text(json.dumps({"date": date, "t": time.time(), "ratings": ratings}))
     return ratings
 
 

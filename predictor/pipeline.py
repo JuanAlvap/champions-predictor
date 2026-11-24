@@ -12,8 +12,12 @@ from . import agent, explain, grading, parlays
 from .config import DATA_DIR, SETTINGS
 from .model import (MARKET_GROUPS, TeamAdjust, blend, build_match, market_label,
                     market_probabilities, remove_margin, top_scores)
-from .sources import clubelo, espn, http, llm, news
-from .sources.api_football import ApiFootball, parse_odds
+import math
+import sys
+
+from .sources import clubelo, http, llm, news
+from .sources.api_football import parse_odds
+from .sources.espn import EspnApi
 
 log = logging.getLogger("predictor")
 TZ = ZoneInfo("America/Bogota")
@@ -106,12 +110,31 @@ def _markets(mm, odds: dict[str, float], home: str, away: str) -> dict:
     return out
 
 
-def _data_quality(side_h: dict, side_a: dict, has_odds: bool, deep: bool) -> dict:
+def _fill_elo(elo_h, elo_a, odds):
+    """Si falta el Elo de un equipo (ClubElo solo publica el top 100), lo deduce de las cuotas."""
+    if elo_h and elo_a:
+        return elo_h, elo_a, "elo"
+    if {"1", "X", "2"} <= odds.keys():
+        f = remove_margin({k: odds[k] for k in ("1", "X", "2")})
+        e = min(max(f["1"] + 0.5 * f["X"], 0.02), 0.98)
+        dr = -400 * math.log10(1 / e - 1) - SETTINGS.home_advantage_elo
+        if elo_h and not elo_a:
+            return elo_h, elo_h - dr, "mercado"
+        if elo_a and not elo_h:
+            return elo_a + dr, elo_a, "mercado"
+        return 1750 + dr / 2, 1750 - dr / 2, "mercado"
+    return elo_h, elo_a, "promedio"
+
+
+def _data_quality(side_h: dict, side_a: dict, has_odds: bool, deep: bool, elo_src: str = "elo") -> dict:
     items = []
     score = 30
-    if side_h["elo_found"] and side_a["elo_found"]:
+    if elo_src == "elo":
         score += 25
         items.append("Nivel de ambos equipos (Elo)")
+    elif elo_src == "mercado":
+        score += 10
+        items.append("Un equipo no tiene Elo publicado: su nivel se dedujo de las cuotas")
     else:
         items.append("Falta el Elo de algún equipo: se usó un valor promedio")
     if has_odds:
@@ -119,7 +142,7 @@ def _data_quality(side_h: dict, side_a: dict, has_odds: bool, deep: bool) -> dic
         items.append("Cuotas reales de casas de apuestas")
     if deep:
         score += 10
-        items.append("Bajas oficiales y forma reciente")
+        items.append("Forma reciente y once probable según los últimos partidos")
         if side_h.get("llm") or side_a.get("llm"):
             score += 10
             items.append("Noticias de prensa interpretadas por IA")
@@ -131,23 +154,20 @@ def _data_quality(side_h: dict, side_a: dict, has_odds: bool, deep: bool) -> dic
     return {"score": min(score, 100), "items": items}
 
 
-def run(api: ApiFootball | None = None, *, elo_override: dict | None = None,
+def run(api=None, *, elo_override: dict | None = None,
         headlines_fn=None, use_llm: bool = True, now: datetime | None = None) -> dict:
     t0 = time.time()
     now = now or datetime.now(timezone.utc)
-    api = api or ApiFootball()
+    api = api or EspnApi()
     headlines_fn = headlines_fn or news.team_headlines
 
     season = SETTINGS.season or api.current_season(SETTINGS.league_id) or _guess_season(now)
     date_from = (now - timedelta(days=4)).date().isoformat()
     date_to = (now + timedelta(days=SETTINGS.days_ahead)).date().isoformat()
     fixtures = api.fixtures_range(SETTINGS.league_id, season, date_from, date_to)
-    fixtures_source = "api-football"
-    if not fixtures and not SETTINGS.demo:
-        log.warning("API-Football no devolvió partidos; uso el calendario de ESPN")
-        fixtures = espn.fixtures(date_from, date_to)
-        fixtures_source = "espn"
-    espn_mode = fixtures_source == "espn"
+    if not fixtures:
+        log.error("No se encontraron partidos entre %s y %s; no se sobrescriben los datos.", date_from, date_to)
+        sys.exit(1)
     log.info("Temporada %s: %d partidos entre %s y %s", season, len(fixtures), date_from, date_to)
 
     results = {f["fixture"]["id"]: (f["goals"]["home"], f["goals"]["away"]) for f in fixtures
@@ -162,25 +182,21 @@ def run(api: ApiFootball | None = None, *, elo_override: dict | None = None,
 
     # Cuotas por fecha (pocas peticiones para muchos partidos)
     odds_map: dict[int, dict] = {}
-    for d in ([] if espn_mode else sorted({f["fixture"]["date"][:10] for f in upcoming
-                                           if f["fixture"]["status"]["short"] == "NS"})):
+    for d in sorted({f["fixture"]["date"][:10] for f in upcoming if f["fixture"]["status"]["short"] == "NS"}):
         for entry in api.odds_by_date(SETTINGS.league_id, season, d):
             fid = entry.get("fixture", {}).get("id")
             if fid:
                 odds_map[fid] = parse_odds(entry)
 
     matches = []
-    # Análisis profundo solo para el próximo día con partidos (cabe en la cuota gratis)
-    ns_days = sorted({datetime.fromtimestamp(f["fixture"]["timestamp"], TZ).date()
-                      for f in upcoming if f["fixture"]["status"]["short"] in ("NS", "TBD")})
-    deep_day = ns_days[0] if ns_days else None
+    deep_cut = now.timestamp() + SETTINGS.deep_window_hours * 3600
     for f in upcoming:
         fx, teams = f["fixture"], f["teams"]
         fid = fx["id"]
         status = fx["status"]["short"]
         hours_to = (fx["timestamp"] - now.timestamp()) / 3600
         kickoff_local = datetime.fromtimestamp(fx["timestamp"], TZ)
-        deep = status in ("NS", "TBD") and kickoff_local.date() == deep_day
+        deep = status in ("NS", "TBD") and fx["timestamp"] <= deep_cut
 
         elo_h, key_h = clubelo.lookup(teams["home"]["name"], ratings)
         elo_a, key_a = clubelo.lookup(teams["away"]["name"], ratings)
@@ -189,20 +205,21 @@ def run(api: ApiFootball | None = None, *, elo_override: dict | None = None,
         form_h = form_a = {"n": 0, "points": 0, "gd": 0, "string": "—", "games": []}
         h2h = {"n": 0}
         if deep:
-            injuries = [] if espn_mode else api.injuries(fid)
+            injuries = api.injuries(fid)
+            match_news = api.match_news(fid) if hasattr(api, "match_news") else []
             sides = {}
             for side_key in ("home", "away"):
                 team = teams[side_key]
                 opp = teams["away" if side_key == "home" else "home"]
-                last = [] if espn_mode else api.team_last_fixtures(team["id"], 5)
+                last = api.team_last_fixtures(team["id"], 5)
                 form = agent.form_from_fixtures(team["id"], last)
                 fps = []
                 for g in form["games"][:SETTINGS.last_fixtures_for_lineup]:
                     fps.append(api.fixture_players(g["fixture_id"]))
                 sides[side_key] = (team, opp, form, fps, last)
-            lineup = api.lineups(fid) if 0 < hours_to <= 1.5 and not espn_mode else None
+            lineup = api.lineups(fid) if 0 < hours_to <= 2 else None
             # Historial directo (1 petición, en caché una semana); si falla, usa los últimos partidos
-            h2h_fx = [] if espn_mode else api.head_to_head(teams["home"]["id"], teams["away"]["id"])
+            h2h_fx = api.head_to_head(teams["home"]["id"], teams["away"]["id"])
             if not h2h_fx:
                 pool = sides["home"][4] + sides["away"][4]
                 ids = {teams["home"]["id"], teams["away"]["id"]}
@@ -212,7 +229,7 @@ def run(api: ApiFootball | None = None, *, elo_override: dict | None = None,
             h2h = _h2h_from_fixtures(teams["home"]["id"], h2h_fx)
             for side_key, (team, opp, form, fps, _last) in sides.items():
                 inj = [i for i in injuries if i.get("team", {}).get("id") == team["id"]]
-                heads = headlines_fn(team["name"])
+                heads = headlines_fn(team["name"]) + match_news
                 intel = agent.build_team_intel(
                     team["name"], opp["name"], kickoff_local.strftime("%Y-%m-%d %H:%M"), hours_to,
                     team["id"], inj, fps, heads, form, lineup, use_llm=use_llm)
@@ -228,9 +245,10 @@ def run(api: ApiFootball | None = None, *, elo_override: dict | None = None,
             adj_h.combine(1 + tilt, 1, None)
             adj_a.combine(1 - tilt, 1, None)
 
+        odds = odds_map.get(fid, {})
+        elo_h, elo_a, elo_src = _fill_elo(elo_h, elo_a, odds)
         mm = build_match(elo_h or DEFAULT_ELO, elo_a or DEFAULT_ELO, adj_h, adj_a,
                          SETTINGS.home_advantage_elo, SETTINGS.base_total_goals, SETTINGS.dixon_coles_rho)
-        odds = odds_map.get(fid, {})
         side_h = _team_side(teams["home"], elo_h, key_h, intel_h, form_h)
         side_a = _team_side(teams["away"], elo_a, key_a, intel_a, form_a)
         m = {
@@ -255,7 +273,7 @@ def run(api: ApiFootball | None = None, *, elo_override: dict | None = None,
         for key, mk in m["markets"].items():
             mk["explanation"] = explain.leg_explanation(m, key, mk)
         m["reasons"] = explain.match_reasons(m)
-        m["data_quality"] = _data_quality(side_h, side_a, bool(odds), deep)
+        m["data_quality"] = _data_quality(side_h, side_a, bool(odds), deep, elo_src)
         m["alerts"] = _alerts(m)
         m["highlights"] = _highlights(m)
         matches.append(m)
@@ -272,7 +290,7 @@ def run(api: ApiFootball | None = None, *, elo_override: dict | None = None,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "generated_local": datetime.now(TZ).isoformat(),
         "season": season,
-        "fixtures_source": fixtures_source,
+        "fixtures_source": "espn" if isinstance(api, EspnApi) else "api",
         "demo": SETTINGS.demo,
         "days": sorted(days),
         "matches": matches,
@@ -290,7 +308,7 @@ def run(api: ApiFootball | None = None, *, elo_override: dict | None = None,
     }
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     (DATA_DIR / "latest.json").write_text(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
-    log.info("Listo: %d partidos, %d peticiones a API-Football, IA: %s", len(matches), api.used, llm.USAGE)
+    log.info("Listo: %d partidos, %d peticiones a fuentes de datos, IA: %s", len(matches), api.used, llm.USAGE)
     return out
 
 

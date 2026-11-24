@@ -8,8 +8,8 @@ Todo funciona con servicios gratuitos.
 
 1. **Nivel de cada equipo:** Elo de [ClubElo](http://clubelo.com) más ventaja de local.
 2. **Goles esperados:** la diferencia de Elo se convierte en goles con una constante calibrada para que coincida con la expectativa del propio Elo.
-3. **Agente de noticias** (para el próximo día con partidos):
-   - lesiones y sanciones oficiales de API-Football;
+3. **Agente de noticias** (partidos de las próximas 72 horas):
+   - calendario, cuotas (DraftKings), forma y alineaciones desde ESPN (público, sin clave);
    - quién fue titular, cuántos minutos jugó y con qué nota en los últimos partidos (un mal partido o una salida temprana bajan su probabilidad de ser titular);
    - titulares de prensa de Google News en español e inglés, interpretados por una IA gratuita (Groq; Gemini si Groq se queda sin cuota).
    Con eso arma su propio once probable y ajusta el ataque y la defensa de cada equipo según quién falta y qué tan importante es.
@@ -34,11 +34,11 @@ python -m pytest -q
 
 | Nombre | Para qué |
 |---|---|
-| `API_FOOTBALL_KEY` | Partidos, lesiones, alineaciones, cuotas (plan gratis: 100 peticiones al día) |
+| `API_FOOTBALL_KEY` | Reservada: el plan gratis no cubre la temporada actual, así que hoy se usa ESPN |
 | `GROQ_API_KEY` | IA principal para leer titulares |
 | `GEMINI_API_KEY` | IA de respaldo |
 
-Cada corrida gasta como máximo `API_BUDGET` peticiones (75 por defecto) y guarda caché en `data/cache/`, así que se pueden hacer un par de actualizaciones al día.
+ESPN, ClubElo y Google News no piden clave. La IA usa la cuota gratis de Groq (o Gemini).
 
 ## Aviso
 

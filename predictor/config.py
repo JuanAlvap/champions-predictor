@@ -34,10 +34,11 @@ class Settings:
 
     # --- Presupuesto de peticiones a API-Football (plan gratis = 100/día) ---
     api_budget: int = field(default_factory=lambda: int(_env("API_BUDGET", "75")))
-    last_fixtures_for_lineup: int = 1  # partidos previos usados para estimar titulares
+    last_fixtures_for_lineup: int = 2  # partidos previos usados para estimar titulares
 
     # --- Ventana de análisis ---
     days_ahead: int = field(default_factory=lambda: int(_env("DAYS_AHEAD", "8")))
+    deep_window_hours: int = 72  # noticias y once probable para partidos dentro de esta ventana
 
     # --- Parámetros del modelo ---
     home_advantage_elo: float = 65.0

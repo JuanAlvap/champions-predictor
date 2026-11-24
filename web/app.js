@@ -526,7 +526,7 @@ function viewModelo() {
     ${d ? `<h2>Última actualización</h2>
       <div class="panel" style="font-size:14.5px">
         <p>${new Date(d.generated_at).toLocaleString("es-CO", { timeZone: TZ })}, en ${d.run.seconds} s.</p>
-        <p>API-Football: ${d.run.api_requests} de ${d.run.api_budget} peticiones permitidas por corrida (100 al día en el plan gratis).</p>
+        <p>Datos de partidos y cuotas: ESPN (${d.run.api_requests} consultas). Nivel de equipos: ClubElo.</p>
         <p>IA que leyó noticias: Groq ${d.run.llm.groq}, Gemini ${d.run.llm.gemini}${d.run.llm.failed ? `, sin respuesta ${d.run.llm.failed}` : ""}.</p>
         ${Object.entries(d.run.sources || {}).filter(([, v]) => v.errors).map(([k, v]) => `<p class="warn">${esc(k)}: ${v.errors} errores. ${esc(v.last_error)}</p>`).join("")}
       </div>` : ""}
