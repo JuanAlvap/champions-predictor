@@ -110,6 +110,24 @@ def _markets(mm, odds: dict[str, float], home: str, away: str) -> dict:
     return out
 
 
+def _match_total(elo_h, elo_a, odds) -> tuple[float, bool]:
+    """Goles totales esperados: mezcla el promedio histórico con lo que implica la línea de goles de la casa."""
+    base = SETTINGS.base_total_goals
+    for line in ("2.5", "3.5", "4.5", "1.5"):
+        o, u = odds.get(f"over_{line}"), odds.get(f"under_{line}")
+        if not (o and u):
+            continue
+        target = remove_margin({"o": o, "u": u})["o"]
+        best, err = base, 9.0
+        for t in [x / 10 for x in range(20, 51)]:
+            mm = build_match(elo_h, elo_a, None, None, SETTINGS.home_advantage_elo, t, SETTINGS.dixon_coles_rho)
+            e = abs(market_probabilities(mm.matrix)[f"over_{line}"] - target)
+            if e < err:
+                best, err = t, e
+        return round(0.3 * base + 0.7 * best, 1), True
+    return base, False
+
+
 def _fill_elo(elo_h, elo_a, odds):
     """Si falta el Elo de un equipo (ClubElo solo publica el top 100), lo deduce de las cuotas."""
     if elo_h and elo_a:
@@ -250,8 +268,9 @@ def run(api=None, *, elo_override: dict | None = None,
 
         odds = odds_map.get(fid, {})
         elo_h, elo_a, elo_src = _fill_elo(elo_h, elo_a, odds)
+        total, _ = _match_total(elo_h or DEFAULT_ELO, elo_a or DEFAULT_ELO, odds)
         mm = build_match(elo_h or DEFAULT_ELO, elo_a or DEFAULT_ELO, adj_h, adj_a,
-                         SETTINGS.home_advantage_elo, SETTINGS.base_total_goals, SETTINGS.dixon_coles_rho)
+                         SETTINGS.home_advantage_elo, total, SETTINGS.dixon_coles_rho)
         side_h = _team_side(teams["home"], elo_h, key_h, intel_h, form_h)
         side_a = _team_side(teams["away"], elo_a, key_a, intel_a, form_a)
         m = {
