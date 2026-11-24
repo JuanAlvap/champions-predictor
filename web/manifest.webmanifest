@@ -1,0 +1,16 @@
+{
+  "name": "Parleys UCL",
+  "short_name": "Parleys UCL",
+  "description": "Probabilidades y parleys de la Champions League",
+  "start_url": "./#/jornada",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#101B3D",
+  "theme_color": "#101B3D",
+  "lang": "es",
+  "icons": [
+    {"src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}
