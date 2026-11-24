@@ -70,7 +70,7 @@ def _groq_once(model: str, system: str, user: str) -> tuple[dict | None, str]:
         r = http.SESSION.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {SETTINGS.groq_api_key}"},
-            json={"model": model, "temperature": 0.1, "max_tokens": 1200,
+            json={"model": model, "temperature": 0.1, "max_tokens": 900,
                   "response_format": {"type": "json_object"},
                   "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]},
             timeout=60,

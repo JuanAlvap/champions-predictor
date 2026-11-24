@@ -211,16 +211,42 @@ def _save_player_cache(cache: dict) -> None:
     PLAYERS_CACHE.write_text(json.dumps(cache, ensure_ascii=False, separators=(",", ":")))
 
 
+LLM_CACHE = CACHE_DIR / "llm.json"
+
+
 def interpret_news(team: str, opp: str, date: str, hours: float, injuries: list[dict],
                    players: dict[str, PlayerInfo], headlines: list[dict]) -> tuple[dict | None, str | None]:
+    """Pide a la IA que lea los titulares. Si los titulares no cambiaron, reutiliza la respuesta anterior."""
     if not llm.available():
         return None, None
+    import hashlib
+    import time as _t
+    sig = hashlib.md5(("|".join(sorted(h["title"] for h in headlines[:12])) + "|" + "|".join(
+        sorted(i["player"]["name"] for i in injuries))).encode()).hexdigest()
+    key = f"{team}|{date[:10]}"
+    try:
+        cache = json.loads(LLM_CACHE.read_text())
+    except (OSError, ValueError):
+        cache = {}
+    hit = cache.get(key)
+    if hit and hit.get("sig") == sig and _t.time() - hit.get("t", 0) < 12 * 3600:
+        return hit["resp"], hit.get("provider")
+    resp, provider = _ask_llm(team, opp, date, hours, injuries, players, headlines)
+    if resp is not None and not SETTINGS.demo:
+        cache = {k: v for k, v in cache.items() if _t.time() - v.get("t", 0) < 3 * 86400}
+        cache[key] = {"sig": sig, "t": _t.time(), "resp": resp, "provider": provider}
+        LLM_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        LLM_CACHE.write_text(json.dumps(cache, ensure_ascii=False, separators=(",", ":")))
+    return resp, provider
+
+
+def _ask_llm(team, opp, date, hours, injuries, players, headlines):
     inj_txt = "\n".join(
         f"- {i['player']['name']}: {i['player'].get('type', '')} ({i['player'].get('reason', '')})"
         for i in injuries) or "- (ninguna)"
-    regulars = sorted(players.values(), key=lambda p: (-p.starts, -p.minutes))[:16]
+    regulars = sorted(players.values(), key=lambda p: (-p.starts, -p.minutes))[:14]
     reg_txt = "\n".join(f"- {p.name} ({p.position or '?'}, {p.starts} tit.)" for p in regulars) or "- (sin datos)"
-    head_txt = "\n".join(f"- [{h['hours_ago']:.0f}h] {h['title']} — {h['source']}" for h in headlines[:18]) or "- (sin titulares)"
+    head_txt = "\n".join(f"- [{h['hours_ago']:.0f}h] {h['title']} — {h['source']}" for h in headlines[:12]) or "- (sin titulares)"
     prompt = PROMPT.format(team=team, opp=opp, competition="UEFA Champions League", date=date,
                            hours=round(hours), injuries=inj_txt, regulars=reg_txt, headlines=head_txt)
     return llm.ask_json(SYSTEM, prompt)
