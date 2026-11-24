@@ -28,6 +28,7 @@ GROQ_MODELS = [
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
 ]
+_available: list[str] | None = None
 _cooldown: dict[str, float] = {}  # modelo -> momento en que se puede volver a usar
 _dead: set[str] = set()  # modelos que no existen o sin acceso
 
@@ -102,11 +103,30 @@ def _groq_once(model: str, system: str, user: str) -> tuple[dict | None, str]:
     return out, "ok"
 
 
+def _groq_models() -> list[str]:
+    """Modelos de chat disponibles en la cuenta, en orden de preferencia."""
+    global _available
+    if _available is None:
+        _available = []
+        try:
+            r = http.SESSION.get("https://api.groq.com/openai/v1/models", timeout=20,
+                                 headers={"Authorization": f"Bearer {SETTINGS.groq_api_key}"})
+            ids = [m["id"] for m in r.json().get("data", []) if m.get("active", True)] if r.ok else []
+        except (requests.RequestException, ValueError, KeyError):
+            ids = []
+        skip = ("whisper", "guard", "tts", "playai", "orpheus", "compound", "allam", "prompt")
+        chat = [i for i in ids if not any(k in i.lower() for k in skip)]
+        pref = [m for m in [SETTINGS.groq_model] + GROQ_MODELS if not chat or m in chat]
+        big = sorted([m for m in chat if m not in pref and any(k in m for k in ("70b", "120b", "scout", "maverick", "32b"))])
+        _available = list(dict.fromkeys(pref + big)) or [SETTINGS.groq_model]
+        log.info("Modelos de Groq a usar: %s", _available)
+    return [m for m in _available if m not in _dead]
+
+
 def _groq(system: str, user: str) -> tuple[dict | None, str | None]:
     if not SETTINGS.groq_api_key:
         return None, None
-    models = [m for m in ([SETTINGS.groq_model] + GROQ_MODELS) if m not in _dead]
-    models = list(dict.fromkeys(models))
+    models = _groq_models()
     for _round in range(3):
         ready = [m for m in models if _cooldown.get(m, 0) <= time.time() and m not in _dead]
         for m in ready:
@@ -176,10 +196,10 @@ def ask_json(system: str, user: str) -> tuple[dict | None, str | None]:
         USAGE["gemini"] += 1
         return out, "gemini"
     # Último intento: esperar a que se libere algún modelo de Groq
-    alive = [m for m in GROQ_MODELS if m not in _dead]
-    if SETTINGS.groq_api_key and alive:
+    alive = _groq_models() if SETTINGS.groq_api_key else []
+    if alive:
         wait = min(_cooldown.get(m, 0) for m in alive) - time.time()
-        if 0 < wait <= 70:
+        if 0 < wait <= 100:
             time.sleep(wait + 0.5)
             out, model = _groq(system, user)
             if out is not None:
