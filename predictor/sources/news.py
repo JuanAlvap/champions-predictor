@@ -34,7 +34,8 @@ def team_headlines(team: str, days: int = 4, limit: int = 25) -> list[dict]:
     seen: set[str] = set()
     now = time.time()
     for lang, region in FEEDS:
-        q = f'"{team}" {QUERY_TERMS[lang]} when:{days}d'
+        sport = "(football OR soccer)" if lang == "en" else "fútbol"
+        q = f'"{team}" {sport} {QUERY_TERMS[lang]} when:{days}d'
         url = f"https://news.google.com/rss/search?q={quote_plus(q)}&{region}"
         r = http.get(url, "google-news", timeout=20, retries=1)
         if r is None:

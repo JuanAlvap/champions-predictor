@@ -181,15 +181,17 @@ Titulares de prensa recientes (de más nuevo a más viejo, con antigüedad en ho
 {headlines}
 
 Tarea: determina el estado de cada jugador relevante del {team} para ESTE partido.
-- status: "out" (baja confirmada), "suspended" (sancionado), "doubt" (duda real), "rotation_risk" (el técnico podría dejarlo en el banco por descanso, bajo rendimiento o gestión de carga), "available" (estaba en duda o lesionado pero ya está disponible).
-- Incluye a los de la lista oficial (confirma, corrige o marca como available si la prensa dice que volvió) y a los que mencionen los titulares.
+Reglas estrictas:
+- Usa SOLO lo que dicen la lista oficial y los titulares. Si un titular no habla del {team}, ignóralo.
+- No marques a nadie solo porque no fue titular en los últimos partidos: eso ya lo sabemos. Solo incluye jugadores que la lista oficial o un titular mencionen.
+- status: "out" (baja confirmada), "suspended" (sancionado), "doubt" (duda real), "rotation_risk" (un titular o el técnico dice que podría ir al banco), "available" (estaba en duda o lesionado y la prensa dice que vuelve).
 - importance: "key" (figura/indispensable), "starter" (titular habitual), "rotation" o "bench". Usa tu conocimiento general del plantel si no hay datos.
 - position: "GK", "DEF", "MID" o "FWD".
-- confidence de 0 a 1: más alta si es parte médico oficial o lo dijo el técnico; baja si es rumor o un titular viejo.
-- reason: máximo 12 palabras en español.
-- source: el medio del titular que respalda el dato, o "oficial".
-- rotation_risk del equipo (0 a 1): probabilidad de que el técnico rote varios titulares (por ejemplo si ya está clasificado o viene un partido más importante). rotation_reason en español, máximo 15 palabras.
-- notes: hasta 3 notas de contexto en español útiles para apostar (máximo 20 palabras cada una), solo si los titulares las respaldan.
+- confidence de 0 a 1: alta si lo confirmó el club o el técnico; media si lo reportan varios medios; baja si es un rumor o un titular viejo.
+- reason: máximo 12 palabras en español. source: el medio del titular que lo respalda ("oficial" solo si está en la lista oficial).
+- rotation_risk del equipo (0 a 1): 0.1 por defecto. Súbelo solo si los titulares hablan de rotaciones, de que ya está clasificado o de que viene un partido más importante. rotation_reason en español, máximo 15 palabras.
+- notes: hasta 3 notas útiles para apostar sobre el {team} (máximo 20 palabras cada una), solo si los titulares las respaldan. Lista vacía si no hay nada concreto.
+- Si no hay información, devuelve "players": [].
 
 Formato exacto:
 {{"players":[{{"name":"","status":"","importance":"","position":"","confidence":0.0,"reason":"","source":""}}],"rotation_risk":0.0,"rotation_reason":"","notes":[]}}"""
@@ -216,9 +218,9 @@ def interpret_news(team: str, opp: str, date: str, hours: float, injuries: list[
     inj_txt = "\n".join(
         f"- {i['player']['name']}: {i['player'].get('type', '')} ({i['player'].get('reason', '')})"
         for i in injuries) or "- (ninguna)"
-    regulars = sorted(players.values(), key=lambda p: (-p.starts, -p.minutes))[:18]
+    regulars = sorted(players.values(), key=lambda p: (-p.starts, -p.minutes))[:16]
     reg_txt = "\n".join(f"- {p.name} ({p.position or '?'}, {p.starts} tit.)" for p in regulars) or "- (sin datos)"
-    head_txt = "\n".join(f"- [{h['hours_ago']:.0f}h] {h['title']} — {h['source']}" for h in headlines) or "- (sin titulares)"
+    head_txt = "\n".join(f"- [{h['hours_ago']:.0f}h] {h['title']} — {h['source']}" for h in headlines[:18]) or "- (sin titulares)"
     prompt = PROMPT.format(team=team, opp=opp, competition="UEFA Champions League", date=date,
                            hours=round(hours), injuries=inj_txt, regulars=reg_txt, headlines=head_txt)
     return llm.ask_json(SYSTEM, prompt)
@@ -279,7 +281,8 @@ def build_team_intel(team: str, opp: str, date: str, hours: float, team_id: int,
     players = recent_usage(team_id, fixtures_players)
     pcache = _load_player_cache()
 
-    # Lesiones oficiales de API-Football
+    has_official = bool(injuries)
+    # Lesiones oficiales (si la fuente las publica)
     for inj in injuries:
         pl = inj.get("player", {})
         typ = (pl.get("type") or "").lower()
@@ -300,9 +303,16 @@ def build_team_intel(team: str, opp: str, date: str, hours: float, team_id: int,
                 name = (item.get("name") or "").strip()
                 if not name:
                     continue
-                apply_status(players, name, item.get("status", "available"),
-                             reason=item.get("reason", ""), source=item.get("source", ""),
-                             confidence=item.get("confidence", 0.5), importance=item.get("importance"),
+                src = item.get("source", "") or ""
+                conf = item.get("confidence", 0.5)
+                if src.lower() == "oficial" and not has_official:
+                    src, conf = "prensa", min(float(conf or 0.5), 0.5)
+                status = item.get("status", "available")
+                known = find_player(players, name)
+                if status == "rotation_risk" and (known is None or (known.importance or "") in ("bench", "rotation")):
+                    continue  # rotar a un suplente no cambia nada
+                apply_status(players, name, status, reason=item.get("reason", ""), source=src,
+                             confidence=conf, importance=item.get("importance"),
                              position=item.get("position"))
                 pcache[f"{team}|{_norm(name)}"] = {
                     "importance": item.get("importance"), "position": item.get("position")}

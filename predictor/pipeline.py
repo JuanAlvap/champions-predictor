@@ -229,7 +229,10 @@ def run(api=None, *, elo_override: dict | None = None,
             h2h = _h2h_from_fixtures(teams["home"]["id"], h2h_fx)
             for side_key, (team, opp, form, fps, _last) in sides.items():
                 inj = [i for i in injuries if i.get("team", {}).get("id") == team["id"]]
-                heads = headlines_fn(team["name"]) + match_news
+                key = team["name"].split()[0].lower()
+                mine = [h for h in match_news if key in h["title"].lower()
+                        or opp["name"].split()[0].lower() in h["title"].lower()]
+                heads = headlines_fn(team["name"]) + mine
                 intel = agent.build_team_intel(
                     team["name"], opp["name"], kickoff_local.strftime("%Y-%m-%d %H:%M"), hours_to,
                     team["id"], inj, fps, heads, form, lineup, use_llm=use_llm)
